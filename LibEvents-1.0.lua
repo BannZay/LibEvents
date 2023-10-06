@@ -80,9 +80,15 @@ local function ListenerInterceptWrite(self, tbl, key, value)
 	end
 end
 
+local function DisabledEventsHandler(...)
+	log:Log(50, "Disabled event call ignored", ...)
+end
+
 local function ListenerInterceptRead(self, tbl, key)
 	log:Log(60, "Read of", key, "was intercepted");
+		
 	local tableState = rawget(tbl, "state");
+	
 	if tableState ~= nil then
 		local target = tableState.target;
 		local events = tableState.events;
@@ -90,10 +96,13 @@ local function ListenerInterceptRead(self, tbl, key)
 		if target ~= nil and events ~= nil then
 			local event = events[key]
 			if event ~= nil then
-			
 				log:Log(60, "Returned modified call");
 				local result = function(self, ...) event(target, ...) end
 				return result
+			else
+				if tableState.supressedEvents[key] ~= nil then
+					return DisabledEventsHandler
+				end
 			end
 		end
 	end
@@ -107,6 +116,7 @@ end
 function EventListener:New(target)
 	local eventListener = EventListenerPrototype:CreateChild();
 	eventListener.state = {}
+	eventListener.state.supressedEvents = {}
 	eventListener.state.id = #eventListeners + 1;
 	eventListener.state.target = target or eventListener;
 	eventListeners[eventListener.state.id] = eventListener;
