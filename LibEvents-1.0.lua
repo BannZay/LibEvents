@@ -1,158 +1,127 @@
 -- LibEvents provides methods for creating eventManagers.
--- Use :New(target) to retrieve new manager. Assign methods to the manager with events name and events parameters as following:
+-- Use :New(target) to retrieve new manager. Assign methods to the manager with events name and events parameters.
+-- Use events:Disable() to temporarily disable events registered through given manager
+-- Use events:Enable() to enable all events
+-- Use events:EVENT_NAME(argument1, argument2, etc) to call registered eventhandler manually
 
--- local events = LibStub("LibEvents-1.0"):New();
+-- SAMPLE OF USAGE:
+
+-- local events = LibStub("LibEvents-1.0"):New(); -- creates event manager
 --
 -- function events:CHAT_MSG_SAY(text, playerName, ...)
 --		print(playerName, "just said '", text, "'");
 -- end
+-- 
 --
 -- function events:PLAYER_ENTERING_WORLD()
 --		print("You just entered the world");
 -- end
 
-local EventListener = LibStub:NewLibrary("LibEvents-1.0", 1);
-if not EventListener then return end
+-- events:PLAYER_ENTERING_WORLD() -- prints 'You just entered the world'
+-- events:Disable()
+-- events:PLAYER_ENTERING_WORLD() -- does not print anything as events were disabled
+-- events:Enable()
+
+-- events.PLAYER_ENTERING_WORLD = nil
+-- events:PLAYER_ENTERING_WORLD() -- throws an error since this event is no longer registered within eventManager
+
+local LibEvents = LibStub:NewLibrary("LibEvents-1.0", 1);
+if not LibEvents then return end
 
 local debugLevel = -1;
-local log = LibStub("LibLogger-1.0"):New("EventListener", debugLevel);
+local log = LibStub("LibLogger-1.0"):New("LibEvents", debugLevel);
 
 local LibPrototype = LibStub("LibPrototype-1.0");
 local EventListenerPrototype = LibPrototype:CreatePrototype();
-local eventsFrame = CreateFrame("Frame");
-local eventListeners = {} -- { [eventListenerId] = eventListener }
-local eventsRegistry = {} -- { [eventName][eventListenerId] = nil or function([arg1] [, arg2] [, argN])  end}
 
-local function OnEvent(eventName, ...)
-	local eventRegistryEntry = eventsRegistry[eventName];
-	
-	for listenerId, func in pairs(eventRegistryEntry) do
-		local listener = eventListeners[listenerId];
-		listener[eventName](listener.state.target or listener, ...);
-	end
+local function CreateEvocatableObject(name, callback)
+	local result = {}
+	setmetatable(result, { __tostring = function() return name end, __call = callback })
+	return result
 end
 
-local function RegisterEvent(id, eventName, callback, doNotOverride)
-	if eventName == nil then error("eventName was nil") end
-	if type(eventName) ~= "string" then error("eventName must be string but was " .. type(eventName)) end
-	
-	if eventsRegistry[eventName] == nil then
-		eventsRegistry[eventName] = {}
-		eventsFrame:RegisterEvent(eventName);
-	end
-	
-	if doNotOverride and self:IsEventRegistered(eventName) then
-		return false;
-	end
-	
-	eventsRegistry[eventName][id] = callback;
-	return true;
-end
+local disabledEventsHandler = CreateEvocatableObject("This event was disabled", function() log:Log(50, "Disabled event call ignored") end)
 
-local function ListenerInterceptWrite(self, tbl, key, value)
+local function ListenerInterceptWrite(self, key, value)
 	log:Log(60, "Assignment of", key, "was intercepted");
-	if type(value) == "function" then
-		local tableState = rawget(tbl, "state");
-		
-		if tableState == nil then
-			tableState = {}
-			rawset(tbl, "state", tableState);
-			log:Log(50, "New table state initialized");
-		end
-		
-		if tableState.target ~= nil then
-			local oldValue = value;
-			value = function(self, ...) oldValue(tableState.target, ...); end
-		end
-		
-		
-		if tableState.events == nil then
-			tableState.events = {}
-		end
-		
-		log:Log(60, "Event", key, "was hidden in events collection");
-		tableState.events[key] = value;
-		
-		RegisterEvent(self.state.id, key, value);
+	
+	local state = rawget(self, "state");
+	
+	if value == nil then
+		state.events[key] = nil
+		LibEvents.Registry:UnregisterEvent(self, key);
 	else
-		log:Log(60, "Raw set used for ", key);
-		rawset(tbl, key, value)
+		if type(value) ~= "function" then
+			error("value must be type of func or nil")
+		end
+		
+		local oldValue = value;
+		value = function(this, ...) oldValue(state.target, ...) end
+		state.events[key] = value
+		
+		if state.enabled then
+			LibEvents.Registry:RegisterEvent(self, key, value);
+		end
 	end
 end
 
-local function DisabledEventsHandler(...)
-	log:Log(50, "Disabled event call ignored", ...)
-end
-
-local function ListenerInterceptRead(self, tbl, key)
+local function ListenerInterceptRead(self, key)
 	log:Log(60, "Read of", key, "was intercepted");
 		
-	local tableState = rawget(tbl, "state");
+	local state = rawget(self, "state");
 	
-	if tableState ~= nil then
-		local target = tableState.target;
-		local events = tableState.events;
-		
-		if target ~= nil and events ~= nil then
-			local event = events[key]
-			if event ~= nil then
-				log:Log(60, "Returned modified call");
-				local result = function(self, ...) event(target, ...) end
-				return result
-			else
-				if tableState.supressedEvents[key] ~= nil then
-					return DisabledEventsHandler
-				end
-			end
+	local handler = state.events[key]
+	if handler ~= nil then
+		if not state.enabled then
+			return disabledEventsHandler
 		end
+		
+		log:Log(60, "Returned modified call");
+		local result = function(self, ...) handler(self.state.target, ...) end
+		return result
+	else
+		return nil
 	end
-	
 	
 	log:Log(60, "No value resolved for", key);
 end
 
 -- Creates new instance of EventListener
 -- @target object that wil be passed as self argument for called methods. Example: eventListener:New({name = 'hello'}); eventListener:PLAYER_ENTERING_WORLD() print(self.name) end;
-function EventListener:New(target)
+function LibEvents:New(target)
 	local eventListener = EventListenerPrototype:CreateChild();
 	eventListener.state = {}
-	eventListener.state.supressedEvents = {}
-	eventListener.state.id = #eventListeners + 1;
+	eventListener.state.enabled = true
 	eventListener.state.target = target or eventListener;
-	eventListeners[eventListener.state.id] = eventListener;
+	eventListener.state.events = {}
 	
-	eventListener:InterceptRead(function(...) return ListenerInterceptRead(eventListener, ...) end);
-	eventListener:InterceptWrite(function(...) return ListenerInterceptWrite(eventListener, ...) end);
+	eventListener:InterceptRead(function(...) return ListenerInterceptRead(...) end);
+	eventListener:InterceptWrite(function(...) return ListenerInterceptWrite(...) end);
 	
 	return eventListener;
 end
 
 -- returns true if event was registered within given listener
 function EventListenerPrototype:IsEventRegistered(eventName)
-	return eventsRegistry[eventName] ~= nil and eventsRegistry[eventName][self.state.id] ~= nil;
+	return LibEvents.Registry:IsEventRegistered(self, eventName)
 end
 
--- removes registered event. "eventListener:UnregisterEvent('EVENT_NAME')" is opposite to "function eventListener:EVENT_NAME(...) end"
+-- registers event in a common way, advised to use 'function eventListener:EVENT_NAME(arg1, arg2, ...) end' instead
+function EventListenerPrototype:RegisterEvent(eventName, handler)
+	if type(handler) ~= "function" then error() end
+	if eventName == nil then error() end
+	self[eventName] = handler -- going to be intercepted by write interceptor
+end
+
+-- unregisters event in a common way, advised to use 'eventListener.EVENT_NAME = nil' instead
 function EventListenerPrototype:UnregisterEvent(eventName)
 	if eventName == nil then error() end
-	
-	local eventRegistryEntry = eventsRegistry[eventName]
-	
-	if eventRegistryEntry ~= nil then
-		if #eventRegistryEntry > 1 then
-			table.remove(eventRegistryEntry, self.state.id)
-		else
-			eventsRegistry[eventName] = nil;
-			eventsFrame:UnregisterEvent(eventName);
-		end
-	end
-	
-	self.state.events[eventName] = nil;
+	self[eventName] = nil -- going to be intercepted by write interceptor
 end
 
 -- removes all registered events within given listener
 function EventListenerPrototype:UnregisterAllEvents()
-	for eventName, callback in pairs(self:GetEventList()) do
+	for eventName, callback in pairs(self.state.events) do
 		self:UnregisterEvent(eventName);
 	end
 end
@@ -160,32 +129,24 @@ end
 -- temporarily disables all registered events
 function EventListenerPrototype:Disable()
 	self.state.enabled = false;
-	local oldEventList = self.state.supressedEvents or {}
 	
-	for event, callback in pairs(self:GetEventList()) do
-		oldEventList[event] = callback;
+	for eventName, callback in pairs(self.state.events) do
+		LibEvents.Registry:UnregisterEvent(self, eventName)
 	end
-	
-	self.state.supressedEvents = oldEventList;
-	
-	self:UnregisterAllEvents();
 end
 
--- enables all registered events
+-- enables back all disabled events
 function EventListenerPrototype:Enable()
 	if self.state.enabled == false then
-		for eventName, callback in pairs(self.state.supressedEvents) do
-			if self[eventName] == nil then
-				self[eventName] = callback;
-			end
-		end
-		
-		self.state.supressedEvents = nil;
 		self.state.enabled = true;
+	
+		for eventName, callback in pairs(self.state.events) do
+			LibEvents.Registry:RegisterEvent(self, eventName, callback)
+		end
 	end
 end
 
--- returns the list of all registered events within given listener
+-- returns the list of all registered events
 function EventListenerPrototype:GetEventList()
 	local list = {}
 	
@@ -202,5 +163,3 @@ end
 function EventListenerPrototype:GetOwner()
 	return self.state.target;
 end
-
-eventsFrame:SetScript("OnEvent", function(self, eventName, ...) OnEvent(eventName, ...) end);

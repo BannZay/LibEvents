@@ -6,4 +6,5 @@
 	<Include file="libs\LibLogger-1.0\Lib.xml"/>
 	
 	<Script file="LibEvents-1.0.lua"/>
+	<Script file="EventsRegistry.lua"/>
 </Ui>
